@@ -86,12 +86,15 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config)
+        self.dialated_cnn = DialatedCNN(config)
 
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
-        temporal_attention_low = self.temporal_attention(low)
+        low_out = self.temporal_attention(low)
+        high_out = self.dialated_cnn(high)
+
 
 class TransformerPred(nn.Module):
     def __init__(self, config):
