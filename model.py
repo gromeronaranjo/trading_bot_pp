@@ -8,7 +8,7 @@ def wavelet_decompose(x):
     B, T, N = x.shape
 
     x = x.permute(0, 2, 1)
-    x = x.reshape(B, N, T/2, 2)
+    x = x.reshape(B, N, T // 2, 2)
 
     average = x.mean(dim=-1)
     difference = (x[..., 0] - x[..., 1]) / 2
@@ -40,38 +40,42 @@ class Decoupling(nn.Module):
 class Head(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.query = nn.Linear(config.dense_size, config.dense_size/config.n_heads)
-        self.keys = nn.Linear(config.dense_size, config.dense_size/config.n_heads)
-        self.values = nn.Linear(config.dense_size, config.dense_size/config.n_heads)
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
         self.dropout = nn.Dropout(config.dropout)
+
     def forward(self, low):
         B, T, N, D = low.shape
-        low = low.permute(-1, 1) # B, N, T, D
+        low = low.permute(0, 2, 1, 3) # B, N, T, D
         q, k, v = self.query(low), self.keys(low), self.values(low)
-        pre_softmax = q @ k.permute(-1, -2) # (T, D) @ (D, T) = (T, T)
-        scores = F.softmax(pre_softmax)
+        pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
+        scores = F.softmax(pre_softmax, dim=-1)
         return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.heads = nn.ModuleList([Head(config) for _ in range(config.n_heads)])
         self.projection = nn.Linear(config.dense_size, config.dense_size)
 
     def forward(self, low):
-        output = torch.cat([Head(low) for _ in range(self.config.n_heads)], dim=-1)
-        return self.projection(output)
+        output = torch.cat([head(low) for head in self.heads], dim=-1)
+        output = self.projection(output)
+        return output.permute(0, 2, 1, 3)
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
+        self.temporal_attention = MultiHeadAttention(config)
 
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
-        temporal_attention_low = MultiHeadAttention(low)
+        temporal_attention_low = self.temporal_attention(low)
 
 class TransformerPred(nn.Module):
     def __init__(self, config):
