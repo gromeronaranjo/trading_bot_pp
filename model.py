@@ -69,16 +69,17 @@ class DialatedCNN(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel=3, dialation=1)
-        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel=3, dialation=1)
+        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
     
     def forward(self, high):
-        B, T, N, F = high.shape
-        high = high.reshape(B*N, F, T)
-        x = F.relu(self.conv1d)
-        x = F.relu(self.conv2d)
+        B, T, N, D = high.shape
+        high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
+        x = F.relu(self.conv1(high))
+        x = F.relu(self.conv2(x))
 
-        out = x.reshape(B, T, N, F)
+        T_out = x.shape[-1]
+        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2)
         return out
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
@@ -94,6 +95,8 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
 
         low_out = self.temporal_attention(low)
         high_out = self.dialated_cnn(high)
+
+        return low_out, high_out
 
 
 class TransformerPred(nn.Module):
