@@ -137,8 +137,3 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         high_out = self.cross_stock_high(high_out)
         
         return low_out, high_out
-
-
-class TransformerPred(nn.Module):
-    def __init__(self, config):
-        super().__init__()
