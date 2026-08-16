@@ -110,6 +110,15 @@ class DialatedCNN(nn.Module):
         out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
         return out
 
+class FuturePredictor(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    def forward(self, x):
+        B, T, N, F = x.shape
+        x = x.permute(0, 2, -1, 1)
+
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
