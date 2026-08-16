@@ -92,6 +92,9 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.temporal_attention = MultiHeadAttention(config)
         self.dialated_cnn = DialatedCNN(config)
 
+        self.cross_stock_low = MultiHeadAttention(config)
+        self.cross_stock_high = MultiHeadAttention(config)
+
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
@@ -99,6 +102,18 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         low_out = self.temporal_attention(low)
         high_out = self.dialated_cnn(high)
 
+        B, T, N, D = low_out.shape
+        B2, T2, N2, D2 = high_out.shape
+
+        if B != B2 and T != T2 and N != N2 and D != D2:
+            raise ValueError("There is a missmatch in the low_out shape and high_out shape")
+
+        low_prev = low_out.permute(0, 3, 2, 1)
+        high_prev = high_out.permute(0, 3, 2, 1)
+
+        low_out = self.cross_stock_low(low_prev)
+        high_out = self.cross_stock_low(high_prev)
+        
         return low_out, high_out
 
 
