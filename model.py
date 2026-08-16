@@ -63,19 +63,81 @@ class MultiHeadAttention(nn.Module):
     def forward(self, low):
         output = torch.cat([head(low) for head in self.heads], dim=-1)
         output = self.projection(output)
-        return output.permute(0, 2, 1, 3)
+        return output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
+
+class CrossStockHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        q, k, v = self.query(x), self.keys(x), self.values(x)
+        pre_softmax = q @ k.transpose(-1, -2)
+        scores = F.softmax(pre_softmax, dim=-1)
+        return self.dropout(scores @ v)
+
+class CrossStockAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.heads = nn.ModuleList([CrossStockHead(config) for _ in range(config.n_heads)])
+        self.projection = nn.Linear(config.dense_size, config.dense_size)
+
+    def forward(self, x):
+        output = torch.cat([head(x) for head in self.heads], dim=-1)
+        return self.projection(output)
+
+class DialatedCNN(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
+    
+    def forward(self, high):
+        B, T, N, D = high.shape
+        high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
+
+        high = F.pad(high, (2, 0))
+        x = F.relu(self.conv1(high))
+        x = F.pad(x, (2, 0))
+        x = F.relu(self.conv2(x))
+
+        T_out = x.shape[-1]
+        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
+        return out
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config)
+        self.dialated_cnn = DialatedCNN(config)
+
+        self.cross_stock_low = CrossStockAttention(config)
+        self.cross_stock_high = CrossStockAttention(config)
 
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
-        temporal_attention_low = self.temporal_attention(low)
+        low_out = self.temporal_attention(low)
+        high_out = self.dialated_cnn(high)
+
+        B, T, N, D = low_out.shape
+        B2, T2, N2, D2 = high_out.shape
+
+        if B != B2 or T != T2 or N != N2 or D != D2:
+            raise ValueError("There is a missmatch in the low_out shape and high_out shape")
+
+        low_out = self.cross_stock_low(low_out)
+        high_out = self.cross_stock_high(high_out)
+        
+        return low_out, high_out
+
 
 class TransformerPred(nn.Module):
     def __init__(self, config):
