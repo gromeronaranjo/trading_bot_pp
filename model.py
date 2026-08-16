@@ -65,6 +65,31 @@ class MultiHeadAttention(nn.Module):
         output = self.projection(output)
         return output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
 
+class CrossStockHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        q, k, v = self.query(x), self.keys(x), self.values(x)
+        pre_softmax = q @ k.transpose(-1, -2)
+        scores = F.softmax(pre_softmax, dim=-1)
+        return self.dropout(scores @ v)
+
+class CrossStockAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.heads = nn.ModuleList([CrossStockHead(config) for _ in range(config.n_heads)])
+        self.projection = nn.Linear(config.dense_size, config.dense_size)
+
+    def forward(self, x):
+        output = torch.cat([head(x) for head in self.heads], dim=-1)
+        return self.projection(output)
+
 class DialatedCNN(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -92,8 +117,8 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.temporal_attention = MultiHeadAttention(config)
         self.dialated_cnn = DialatedCNN(config)
 
-        self.cross_stock_low = MultiHeadAttention(config)
-        self.cross_stock_high = MultiHeadAttention(config)
+        self.cross_stock_low = CrossStockAttention(config)
+        self.cross_stock_high = CrossStockAttention(config)
 
     def forward(self, low, high):
         low = self.feature_proj(low)
@@ -105,14 +130,11 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         B, T, N, D = low_out.shape
         B2, T2, N2, D2 = high_out.shape
 
-        if B != B2 and T != T2 and N != N2 and D != D2:
+        if B != B2 or T != T2 or N != N2 or D != D2:
             raise ValueError("There is a missmatch in the low_out shape and high_out shape")
 
-        low_prev = low_out.permute(0, 3, 2, 1)
-        high_prev = high_out.permute(0, 3, 2, 1)
-
-        low_out = self.cross_stock_low(low_prev)
-        high_out = self.cross_stock_low(high_prev)
+        low_out = self.cross_stock_low(low_out)
+        high_out = self.cross_stock_high(high_out)
         
         return low_out, high_out
 
