@@ -7,7 +7,7 @@ def wavelet_decompose(x):
     B, T, N = x.shape
 
     x = x.permute(0, 2, 1)
-    x = x.reshape(B, N, T/ 2, 2)
+    x = x.reshape(B, N, T/2, 2)
 
     average = x.mean(dim=-1)
     difference = (x[..., 0] - x[..., 1]) / 2
@@ -36,6 +36,13 @@ class Decoupling(nn.Module):
 
         return low_feature_map, high_feature_map
 
+class DualFrequencySpatiotemporalEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.feature_proj = nn.Linear(config.n_features, config.dense_size)
+
+    def forward(self, x):
+        x = self.feature_proj(x)
 
 class TransformerPred(nn.Module):
     def __init__(self, config):
