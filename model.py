@@ -63,7 +63,7 @@ class MultiHeadAttention(nn.Module):
     def forward(self, low):
         output = torch.cat([head(low) for head in self.heads], dim=-1)
         output = self.projection(output)
-        return output.permute(0, 2, 1, 3)
+        return output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
 
 class DialatedCNN(nn.Module):
     def __init__(self, config):
@@ -75,11 +75,14 @@ class DialatedCNN(nn.Module):
     def forward(self, high):
         B, T, N, D = high.shape
         high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
+
+        high = F.pad(high, (2, 0))
         x = F.relu(self.conv1(high))
+        x = F.pad(x, (2, 0))
         x = F.relu(self.conv2(x))
 
         T_out = x.shape[-1]
-        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2)
+        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
         return out
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
