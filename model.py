@@ -120,6 +120,9 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.cross_stock_low = CrossStockAttention(config)
         self.cross_stock_high = CrossStockAttention(config)
 
+        self.stock_embedding  = nn.Parameter(1, 1, config.n_stocks, config.dense_size)
+        self.time_embedding = nn.Parameter(1, config.time_steps, 1, config.dense_size)
+
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
@@ -133,7 +136,7 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         if B != B2 or T != T2 or N != N2 or D != D2:
             raise ValueError("There is a missmatch in the low_out shape and high_out shape")
 
-        low_out = self.cross_stock_low(low_out)
-        high_out = self.cross_stock_high(high_out)
-        
+        low_out = self.cross_stock_low(low_out) + self.stock_embedding + self.time_embedding
+        high_out = self.cross_stock_high(high_out) + self.stock_embedding + self.time_embedding
+
         return low_out, high_out
