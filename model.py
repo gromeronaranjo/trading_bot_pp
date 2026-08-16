@@ -41,8 +41,9 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
 
-    def forward(self, x):
-        x = self.feature_proj(x)
+    def forward(self, low, high):
+        low = self.feature_proj(low)
+        high = self.feature_proj(high)
 
 class TransformerPred(nn.Module):
     def __init__(self, config):
