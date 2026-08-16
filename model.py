@@ -65,6 +65,22 @@ class MultiHeadAttention(nn.Module):
         output = self.projection(output)
         return output.permute(0, 2, 1, 3)
 
+class DialatedCNN(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel=3, dialation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel=3, dialation=1)
+    
+    def forward(self, high):
+        B, T, N, F = high.shape
+        high = high.reshape(B*N, F, T)
+        x = F.relu(self.conv1d)
+        x = F.relu(self.conv2d)
+
+        out = x.reshape(B, T, N, F)
+        return out
+
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
