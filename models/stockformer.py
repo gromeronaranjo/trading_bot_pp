@@ -143,16 +143,16 @@ class DialatedCNN(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
-        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=2)
+        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=2, dilation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=2, dilation=2)
 
     def forward(self, high):
         B, T, N, D = high.shape
         high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
 
-        high = functional.pad(high, (2, 0))
+        high = functional.pad(high, (1, 0))
         x = functional.relu(self.conv1(high))
-        x = functional.pad(x, (4, 0))
+        x = functional.pad(x, (2, 0))
         x = functional.relu(self.conv2(x))
 
         T_out = x.shape[-1]
