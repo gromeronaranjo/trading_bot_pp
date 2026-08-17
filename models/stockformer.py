@@ -138,7 +138,6 @@ class CrossStockAttention(nn.Module):
 
         return output
 
-
 class DialatedCNN(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -172,7 +171,7 @@ class FuturePredictor(nn.Module):
 
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, stock_graph_embedding):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config, Head)
@@ -181,8 +180,9 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.cross_stock_low = CrossStockAttention(config)
         self.cross_stock_high = CrossStockAttention(config)
 
-        self.stock_embedding = nn.Parameter(
-            torch.randn(1, 1, config.n_stocks, config.dense_size)
+        self.register_buffer(
+            "stock_embedding",
+            stock_graph_embedding.unsqueeze(0).unsqueeze(0)
         )
 
         self.time_embedding = nn.Parameter(
@@ -209,7 +209,6 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         high_out = self.cross_stock_high(high_out)
 
         return low_out, high_out
-
 
 class CrossLowHighAttentionHead(nn.Module):
     def __init__(self, config):
@@ -252,11 +251,15 @@ class DualFrequencyFusionModule(nn.Module):
 
 
 class StockFormer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, stock_graph_embedding):
         super().__init__()
         self.config = config
         self.decoupling = Decoupling()
-        self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(config)
+
+        self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(
+            config,
+            stock_graph_embedding
+        )
 
         self.future_pred_low = FuturePredictor(config)
         self.future_pred_high = FuturePredictor(config)
