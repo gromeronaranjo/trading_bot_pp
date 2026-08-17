@@ -114,10 +114,15 @@ class FuturePredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.l1 = nn.Linear(config.time_steps, config.time_steps*2)
+        self.l2 = nn.Linear(config.time_steps*2, config.time_steps*2)
+        self.l3 = nn.Linear(config.time_steps*2, 2)
 
     def forward(self, x):
         B, T, N, F = x.shape
-        x = x.permute(0, 2, -1, 1)
+        x = x.permute(0, 2, -1, 1) # (B, N, F, T)
+        out = F.relu(self.l3(F.relu(self.l2(F.relu(self.l1(x))))))
+        return out.permute(0, 3, 1, 2)
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
