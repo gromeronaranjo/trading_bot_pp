@@ -32,93 +32,11 @@ class Decoupling(nn.Module):
 
         low_returns, high_returns = wavelet_decompose(returns)
 
-        low_feature_map = torch.cat([low_returns.unsqueeze(-1), other_features],dim=-1)
+        low_feature_map = torch.cat([low_returns.unsqueeze(-1), other_features], dim=-1)
         high_feature_map = torch.cat([high_returns.unsqueeze(-1), other_features], dim=-1)
 
         return low_feature_map, high_feature_map
 
-class Head(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.dropout = nn.Dropout(config.dropout)
-
-    def forward(self, low):
-        B, T, N, D = low.shape
-        low = low.permute(0, 2, 1, 3) # B, N, T, D
-        q, k, v = self.query(low), self.keys(low), self.values(low)
-        pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
-        scores = functional.softmax(pre_softmax, dim=-1)
-        return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, config, head):
-        super().__init__()
-        self.config = config
-        self.heads = nn.ModuleList([head(config) for _ in range(config.n_heads)])
-        self.projection = nn.Linear(config.dense_size, config.dense_size)
-
-    def forward(self, *x):
-        output = torch.cat([head(*x) for head in self.heads], dim=-1)
-        output = self.projection(output)
-        return output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
-
-class CrossStockHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
-        self.dropout = nn.Dropout(config.dropout)
-
-    def forward(self, x):
-        q, k, v = self.query(x), self.keys(x), self.values(x)
-        pre_softmax = q @ k.transpose(-1, -2)
-        scores = functional.softmax(pre_softmax, dim=-1)
-        return self.dropout(scores @ v)
-
-class CrossStockAttention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.heads = nn.ModuleList([CrossStockHead(config) for _ in range(config.n_heads)])
-        self.projection = nn.Linear(config.dense_size, config.dense_size)
-
-    def forward(self, x):
-        output = torch.cat([head(x) for head in self.heads], dim=-1)
-        return self.projection(output)
-
-class DialatedCNN(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
-        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=2)
-    
-    def forward(self, high):
-        B, T, N, D = high.shape
-        high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
-
-        high = functional.pad(high, (2, 0))
-        x = functional.relu(self.conv1(high))
-        x = functional.pad(x, (4, 0))
-        x = functional.relu(self.conv2(x))
-
-        T_out = x.shape[-1]
-        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
-        return out
-
-class FuturePredictor(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.predictor = nn.Linear(config.time_steps, 2)
-
-    def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
-        x = self.predictor(x)
-        return x.permute(0, 3, 1, 2)
 
 class MLP(nn.Module):
     def __init__(self, config):
@@ -134,6 +52,125 @@ class MLP(nn.Module):
         x = x + residual
         return self.norm(x)
 
+
+class Head(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, low):
+        B, T, N, D = low.shape
+        low = low.permute(0, 2, 1, 3) # B, N, T, D
+        q, k, v = self.query(low), self.keys(low), self.values(low)
+
+        pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
+        pre_softmax = pre_softmax / ((D // self.config.n_heads) ** 0.5)
+
+        mask = torch.tril(torch.ones(T, T, device=low.device)).bool()
+        pre_softmax = pre_softmax.masked_fill(~mask, float("-inf"))
+
+        scores = functional.softmax(pre_softmax, dim=-1)
+        return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, config, head):
+        super().__init__()
+        self.config = config
+        self.heads = nn.ModuleList([head(config) for _ in range(config.n_heads)])
+        self.projection = nn.Linear(config.dense_size, config.dense_size)
+        self.norm = nn.LayerNorm(config.dense_size, elementwise_affine=False)
+        self.mlp = MLP(config)
+
+    def forward(self, *x):
+        residual = x[0]
+
+        output = torch.cat([head(*x) for head in self.heads], dim=-1)
+        output = self.projection(output)
+        output = output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
+
+        output = self.norm(output + residual)
+        output = self.mlp(output)
+
+        return output
+
+
+class CrossStockHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        q, k, v = self.query(x), self.keys(x), self.values(x)
+
+        pre_softmax = q @ k.transpose(-1, -2)
+        pre_softmax = pre_softmax / ((self.config.dense_size // self.config.n_heads) ** 0.5)
+
+        scores = functional.softmax(pre_softmax, dim=-1)
+        return self.dropout(scores @ v)
+
+
+class CrossStockAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.heads = nn.ModuleList([CrossStockHead(config) for _ in range(config.n_heads)])
+        self.projection = nn.Linear(config.dense_size, config.dense_size)
+        self.norm = nn.LayerNorm(config.dense_size, elementwise_affine=False)
+        self.mlp = MLP(config)
+
+    def forward(self, x):
+        residual = x
+
+        output = torch.cat([head(x) for head in self.heads], dim=-1)
+        output = self.projection(output)
+
+        output = self.norm(output + residual)
+        output = self.mlp(output)
+
+        return output
+
+
+class DialatedCNN(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=2)
+
+    def forward(self, high):
+        B, T, N, D = high.shape
+        high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
+
+        high = functional.pad(high, (2, 0))
+        x = functional.relu(self.conv1(high))
+        x = functional.pad(x, (4, 0))
+        x = functional.relu(self.conv2(x))
+
+        T_out = x.shape[-1]
+        out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
+        return out
+
+
+class FuturePredictor(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.predictor = nn.Linear(config.time_steps, 2)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+        x = self.predictor(x)
+        return x.permute(0, 3, 1, 2)
+
+
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -144,17 +181,19 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.cross_stock_low = CrossStockAttention(config)
         self.cross_stock_high = CrossStockAttention(config)
 
-        self.stock_embedding  = nn.Parameter(torch.randn(1, 1, config.n_stocks, config.dense_size))
-        self.time_embedding = nn.Parameter(torch.randn(1, config.time_steps, 1, config.dense_size))
+        self.stock_embedding = nn.Parameter(
+            torch.randn(1, 1, config.n_stocks, config.dense_size)
+        )
 
-        self.low_mlp = MLP(config)
+        self.time_embedding = nn.Parameter(
+            torch.randn(1, config.time_steps, 1, config.dense_size)
+        )
 
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
         low_out = self.temporal_attention(low)
-        low_out = self.low_mlp(low_out)
         high_out = self.dialated_cnn(high)
 
         B, T, N, D = low_out.shape
@@ -171,9 +210,11 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
 
         return low_out, high_out
 
+
 class CrossLowHighAttentionHead(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
         self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
         self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
@@ -183,11 +224,19 @@ class CrossLowHighAttentionHead(nn.Module):
         B, T, N, D = low.shape
         low = low.permute(0, 2, 1, 3) # B, N, T, D
         high = high.permute(0, 2, 1, 3)
+
         q, k, v = self.query(low), self.keys(high), self.values(high)
+
         pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
+        pre_softmax = pre_softmax / ((D // self.config.n_heads) ** 0.5)
+
+        mask = torch.tril(torch.ones(T, T, device=low.device)).bool()
+        pre_softmax = pre_softmax.masked_fill(~mask, float("-inf"))
+
         scores = functional.softmax(pre_softmax, dim=-1)
         return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
-    
+
+
 class DualFrequencyFusionModule(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -200,6 +249,7 @@ class DualFrequencyFusionModule(nn.Module):
         cross_out = self.cross_attention(low, high)
 
         return low_out + cross_out
+
 
 class StockFormer(nn.Module):
     def __init__(self, config):
