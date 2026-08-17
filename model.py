@@ -60,8 +60,8 @@ class MultiHeadAttention(nn.Module):
         self.heads = nn.ModuleList([head(config) for _ in range(config.n_heads)])
         self.projection = nn.Linear(config.dense_size, config.dense_size)
 
-    def forward(self, low):
-        output = torch.cat([head(low) for head in self.heads], dim=-1)
+    def forward(self, *x):
+        output = torch.cat([head(*x) for head in self.heads], dim=-1)
         output = self.projection(output)
         return output.permute(0, 2, 1, 3) #(B, N, T, D) ----> (B, T, N, D)
 
@@ -95,7 +95,7 @@ class DialatedCNN(nn.Module):
         super().__init__()
         self.config = config
         self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
-        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=1)
+        self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=3, dilation=2)
     
     def forward(self, high):
         B, T, N, D = high.shape
@@ -103,7 +103,7 @@ class DialatedCNN(nn.Module):
 
         high = functional.pad(high, (2, 0))
         x = functional.relu(self.conv1(high))
-        x = functional.pad(x, (2, 0))
+        x = functional.pad(x, (4, 0))
         x = functional.relu(self.conv2(x))
 
         T_out = x.shape[-1]
@@ -124,14 +124,14 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
-        self.temporal_attention = MultiHeadAttention(config, Head())
+        self.temporal_attention = MultiHeadAttention(config, Head)
         self.dialated_cnn = DialatedCNN(config)
 
         self.cross_stock_low = CrossStockAttention(config)
         self.cross_stock_high = CrossStockAttention(config)
 
-        self.stock_embedding  = nn.Parameter(1, 1, config.n_stocks, config.dense_size)
-        self.time_embedding = nn.Parameter(1, config.time_steps, 1, config.dense_size)
+        self.stock_embedding  = nn.Parameter(torch.randn(1, 1, config.n_stocks, config.dense_size))
+        self.time_embedding = nn.Parameter(torch.randn(1, config.time_steps, 1, config.dense_size))
 
     def forward(self, low, high):
         low = self.feature_proj(low)
@@ -146,8 +146,11 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         if B != B2 or T != T2 or N != N2 or D != D2:
             raise ValueError("There is a mismatch in the low_out shape and high_out shape")
 
-        low_out = self.cross_stock_low(low_out) + self.stock_embedding + self.time_embedding
-        high_out = self.cross_stock_high(high_out) + self.stock_embedding + self.time_embedding
+        low_out = low_out + self.stock_embedding + self.time_embedding
+        high_out = high_out + self.stock_embedding + self.time_embedding
+
+        low_out = self.cross_stock_low(low_out)
+        high_out = self.cross_stock_high(high_out)
 
         return low_out, high_out
 
@@ -162,6 +165,7 @@ class CrossLowHighAttentionHead(nn.Module):
     def forward(self, low, high):
         B, T, N, D = low.shape
         low = low.permute(0, 2, 1, 3) # B, N, T, D
+        high = high.permute(0, 2, 1, 3)
         q, k, v = self.query(low), self.keys(high), self.values(high)
         pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
         scores = functional.softmax(pre_softmax, dim=-1)
@@ -169,8 +173,9 @@ class CrossLowHighAttentionHead(nn.Module):
     
 class DualFrequencyFusionModule(nn.Module):
     def __init__(self, config):
+        super().__init__()
         self.config = config
-        self.low_attention = MultiHeadAttention(config, Head())
+        self.low_attention = MultiHeadAttention(config, Head)
         self.cross_attention = MultiHeadAttention(config, CrossLowHighAttentionHead)
 
     def forward(self, low, high):
@@ -183,13 +188,17 @@ class StockFormer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.decoupling = Decoupling(config)
+        self.decoupling = Decoupling()
         self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(config)
 
         self.future_pred_low = FuturePredictor(config)
         self.future_pred_high = FuturePredictor(config)
+        self.dual_frequency_fusion = DualFrequencyFusionModule(config)
 
     def forward(self, x):
         low, high = self.decoupling(x)
         low, high = self.duel_freq_spatio_temporal_encoder(low, high)
         low, high = self.future_pred_low(low), self.future_pred_high(high)
+        out = self.dual_frequency_fusion(low, high)
+
+        return out
