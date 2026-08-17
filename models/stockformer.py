@@ -192,12 +192,12 @@ class TemporalEmbedding(nn.Module):
         day_of_week = functional.one_hot(
             te[..., 0].long() % 5,
             num_classes=5
-        ).float()
+        ).float() #(B, T, 5)
 
         time_of_day = functional.one_hot(
             te[..., 1].long() % 50,
             num_classes=50
-        ).float()
+        ).float() #(B, T, 50)
 
         te = torch.cat([day_of_week, time_of_day], dim=-1)
         te = functional.relu(self.proj1(te))
@@ -220,23 +220,24 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
             stock_embedding.unsqueeze(0).unsqueeze(0) #(1, 1, N, N)
         )
 
-        self.time_embedding = nn.Parameter(
-            torch.randn(1, config.time_steps, 1, config.dense_size)
-        )
+        self.stock_embedding_processing = nn.Linear(config.n_stocks, config.dense_size)
+        self.temporal_embedding = TemporalEmbedding(config)
 
-        self.stock_embedding_processing = TemporalEmbedding(config)
-
-    def forward(self, low, high):
+    def forward(self, low, high, te):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
         stock_embedding = self.stock_embedding_processing(self.stock_embedding)
+        time_embedding = self.temporal_embedding(te)
+
+        low = low + time_embedding
+        high = high + time_embedding
         
         low_out = self.temporal_attention(low)
         high_out = self.dialated_cnn(high)
 
-        low_out = low_out + stock_embedding + self.time_embedding
-        high_out = high_out + stock_embedding + self.time_embedding
+        low_out = low_out + stock_embedding
+        high_out = high_out + stock_embedding
 
         low_out = self.cross_stock_low(low_out)
         high_out = self.cross_stock_high(high_out)
@@ -301,9 +302,9 @@ class StockFormer(nn.Module):
         self.return_proj = nn.Linear(config.dense_size, 1)
         self.direction_proj = nn.Linear(config.dense_size, 1)
 
-    def forward(self, x):
+    def forward(self, x, te):
         low, high = self.decoupling(x)
-        low, high = self.duel_freq_spatio_temporal_encoder(low, high)
+        low, high = self.duel_freq_spatio_temporal_encoder(low, high, te)
 
         low = self.future_pred_low(low)
         high = self.future_pred_high(high)
