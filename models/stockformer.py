@@ -281,10 +281,13 @@ class StockFormer(nn.Module):
     def forward(self, x):
         low, high = self.decoupling(x)
         low, high = self.duel_freq_spatio_temporal_encoder(low, high)
-        low, high = self.future_pred_low(low), self.future_pred_high(high)
+
+        low = self.future_pred_low(low)
+        high = self.future_pred_high(high)
+
         out = self.dual_frequency_fusion(low, high)
 
-        return_val = self.return_proj(out[:, 0, :, :])
-        direction_val = self.direction_proj(out[:, 0, :, :])
+        return_val = self.return_proj(out)
+        direction_val = self.direction_proj(out)
 
         return return_val, direction_val
