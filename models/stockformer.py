@@ -120,6 +120,20 @@ class FuturePredictor(nn.Module):
         x = self.predictor(x)
         return x.permute(0, 3, 1, 2)
 
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.l1 = nn.Linear(config.dense_size, config.dense_size)
+        self.l2 = nn.Linear(config.dense_size, config.dense_size)
+        self.norm = nn.LayerNorm(config.dense_size, elementwise_affine=False)
+
+    def forward(self, x):
+        residual = x
+        x = functional.relu(self.l1(x))
+        x = self.l2(x)
+        x = x + residual
+        return self.norm(x)
+
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -133,11 +147,14 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.stock_embedding  = nn.Parameter(torch.randn(1, 1, config.n_stocks, config.dense_size))
         self.time_embedding = nn.Parameter(torch.randn(1, config.time_steps, 1, config.dense_size))
 
+        self.low_mlp = MLP(config)
+
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
         low_out = self.temporal_attention(low)
+        low_out = self.low_mlp(low_out)
         high_out = self.dialated_cnn(high)
 
         B, T, N, D = low_out.shape
