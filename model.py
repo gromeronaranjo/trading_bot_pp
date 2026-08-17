@@ -150,3 +150,18 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         high_out = self.cross_stock_high(high_out) + self.stock_embedding + self.time_embedding
 
         return low_out, high_out
+
+class StockFormer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.decoupling = Decoupling(config)
+        self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(config)
+
+        self.future_pred_low = FuturePredictor(config)
+        self.future_pred_high = FuturePredictor(config)
+
+    def forward(self, x):
+        low, high = self.decoupling(x)
+        low, high = self.duel_freq_spatio_temporal_encoder(low, high)
+        low, high = self.future_pred_low(low), self.future_pred_high(high)
