@@ -182,6 +182,29 @@ class FuturePredictor(nn.Module):
         x = self.predictor(x)
         return x.permute(0, 3, 1, 2)
 
+class TemporalEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.proj1 = nn.Linear(55, config.dense_size)
+        self.proj2 = nn.Linear(config.dense_size, config.dense_size)
+
+    def forward(self, te):
+        day_of_week = functional.one_hot(
+            te[..., 0].long() % 5,
+            num_classes=5
+        ).float()
+
+        time_of_day = functional.one_hot(
+            te[..., 1].long() % 50,
+            num_classes=50
+        ).float()
+
+        te = torch.cat([day_of_week, time_of_day], dim=-1)
+        te = functional.relu(self.proj1(te))
+        te = self.proj2(te)
+
+        return te.unsqueeze(2)
+    
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config, stock_embedding):
         super().__init__()
@@ -201,7 +224,7 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
             torch.randn(1, config.time_steps, 1, config.dense_size)
         )
 
-        self.stock_embedding_processing = nn.Linear(config.n_stocks, config.dense_size)
+        self.stock_embedding_processing = TemporalEmbedding(config)
 
     def forward(self, low, high):
         low = self.feature_proj(low)
