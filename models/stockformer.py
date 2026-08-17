@@ -174,10 +174,15 @@ class PearsonModule(nn.Module):
         super().__init__()
 
     def forward(self, x):
-        B, T, N, F = x.shape()
+        B, T, N, F = x.shape
         x = x.permute(0, 3, 1, 2)
-        x = x[:, :, :, 0].squeeze(-1) #(B, T, N)
-        coefs = torch.corrcoef(x)
+        x = x[:, 0, :, :] #(B, T, N)
+
+        coefs = torch.stack([
+            torch.corrcoef(x[b].T)
+            for b in range(B)
+        ])
+
         return coefs
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
