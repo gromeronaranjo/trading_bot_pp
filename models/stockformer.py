@@ -169,6 +169,15 @@ class FuturePredictor(nn.Module):
         x = self.predictor(x)
         return x.permute(0, 3, 1, 2)
 
+class PearsonModule(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+    def forward(self, x):
+        B, T, N, F = x.shape()
+        x = x.permute(0, 2, 1, 3)
+        x = x[:, :, :, 0].squeeze(-1) #(B, N, T)
+        
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config, stock_graph_embedding):
