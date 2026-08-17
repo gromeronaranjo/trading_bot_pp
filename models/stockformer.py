@@ -21,6 +21,16 @@ def wavelet_decompose(x):
 
     return low, high
 
+def pearson_stock_graph(x):
+    B, T, N, F = x.shape
+    x = x[:, :, :, 0] #(B, T, N)
+
+    x = x.reshape(B * T, N)
+
+    coefs = torch.corrcoef(x.T)
+
+    return coefs
+
 
 class Decoupling(nn.Module):
     def __init__(self):
@@ -144,6 +154,7 @@ class DialatedCNN(nn.Module):
         self.config = config
         self.conv1 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=2, dilation=1)
         self.conv2 = nn.Conv1d(config.dense_size, config.dense_size, kernel_size=2, dilation=2)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, high):
         B, T, N, D = high.shape
@@ -151,8 +162,10 @@ class DialatedCNN(nn.Module):
 
         high = functional.pad(high, (1, 0))
         x = functional.relu(self.conv1(high))
+        x = self.dropout(x)
         x = functional.pad(x, (2, 0))
         x = functional.relu(self.conv2(x))
+        x = self.dropout(x)
 
         T_out = x.shape[-1]
         out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
@@ -169,24 +182,8 @@ class FuturePredictor(nn.Module):
         x = self.predictor(x)
         return x.permute(0, 3, 1, 2)
 
-class PearsonModule(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-    def forward(self, x):
-        B, T, N, F = x.shape
-        x = x.permute(0, 3, 1, 2)
-        x = x[:, 0, :, :] #(B, T, N)
-
-        coefs = torch.stack([
-            torch.corrcoef(x[b].T)
-            for b in range(B)
-        ])
-
-        return coefs
-
 class DualFrequencySpatiotemporalEncoder(nn.Module):
-    def __init__(self, config, stock_graph_embedding):
+    def __init__(self, config, stock_embedding):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config, Head)
@@ -197,28 +194,26 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
 
         self.register_buffer(
             "stock_embedding",
-            stock_graph_embedding.unsqueeze(0).unsqueeze(0)
+            stock_embedding.unsqueeze(0).unsqueeze(0) #(1, 1, N, N)
         )
 
         self.time_embedding = nn.Parameter(
             torch.randn(1, config.time_steps, 1, config.dense_size)
         )
 
+        self.stock_embedding_processing = nn.Linear(config.n_stocks, config.dense_size)
+
     def forward(self, low, high):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
+        stock_embedding = self.stock_embedding_processing(self.stock_embedding)
+        
         low_out = self.temporal_attention(low)
         high_out = self.dialated_cnn(high)
 
-        B, T, N, D = low_out.shape
-        B2, T2, N2, D2 = high_out.shape
-
-        if B != B2 or T != T2 or N != N2 or D != D2:
-            raise ValueError("There is a mismatch in the low_out shape and high_out shape")
-
-        low_out = low_out + self.stock_embedding + self.time_embedding
-        high_out = high_out + self.stock_embedding + self.time_embedding
+        low_out = low_out + stock_embedding + self.time_embedding
+        high_out = high_out + stock_embedding + self.time_embedding
 
         low_out = self.cross_stock_low(low_out)
         high_out = self.cross_stock_high(high_out)
@@ -266,14 +261,14 @@ class DualFrequencyFusionModule(nn.Module):
 
 
 class StockFormer(nn.Module):
-    def __init__(self, config, stock_graph_embedding):
+    def __init__(self, config, stock_embedding):
         super().__init__()
         self.config = config
         self.decoupling = Decoupling()
 
         self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(
             config,
-            stock_graph_embedding
+            stock_embedding
         )
 
         self.future_pred_low = FuturePredictor(config)
@@ -290,6 +285,6 @@ class StockFormer(nn.Module):
         out = self.dual_frequency_fusion(low, high)
 
         return_val = self.return_proj(out[:, 0, :, :])
-        direction_val = self.direction_proj(out[:, 1, :, :])
+        direction_val = self.direction_proj(out[:, 0, :, :])
 
         return return_val, direction_val
