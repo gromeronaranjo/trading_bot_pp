@@ -175,9 +175,10 @@ class PearsonModule(nn.Module):
 
     def forward(self, x):
         B, T, N, F = x.shape()
-        x = x.permute(0, 2, 1, 3)
-        x = x[:, :, :, 0].squeeze(-1) #(B, N, T)
-        
+        x = x.permute(0, 3, 1, 2)
+        x = x[:, :, :, 0].squeeze(-1) #(B, T, N)
+        coefs = torch.corrcoef(x)
+        return coefs
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config, stock_graph_embedding):
