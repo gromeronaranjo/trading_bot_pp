@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.optim as optim
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 
 def wavelet_decompose(x):
@@ -50,7 +50,7 @@ class Head(nn.Module):
         low = low.permute(0, 2, 1, 3) # B, N, T, D
         q, k, v = self.query(low), self.keys(low), self.values(low)
         pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
-        scores = F.softmax(pre_softmax, dim=-1)
+        scores = functional.softmax(pre_softmax, dim=-1)
         return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
 
 class MultiHeadAttention(nn.Module):
@@ -76,7 +76,7 @@ class CrossStockHead(nn.Module):
     def forward(self, x):
         q, k, v = self.query(x), self.keys(x), self.values(x)
         pre_softmax = q @ k.transpose(-1, -2)
-        scores = F.softmax(pre_softmax, dim=-1)
+        scores = functional.softmax(pre_softmax, dim=-1)
         return self.dropout(scores @ v)
 
 class CrossStockAttention(nn.Module):
@@ -101,10 +101,10 @@ class DialatedCNN(nn.Module):
         B, T, N, D = high.shape
         high = high.permute(0, 2, 3, 1).reshape(B * N, D, T)
 
-        high = F.pad(high, (2, 0))
-        x = F.relu(self.conv1(high))
-        x = F.pad(x, (2, 0))
-        x = F.relu(self.conv2(x))
+        high = functional.pad(high, (2, 0))
+        x = functional.relu(self.conv1(high))
+        x = functional.pad(x, (2, 0))
+        x = functional.relu(self.conv2(x))
 
         T_out = x.shape[-1]
         out = x.reshape(B, N, D, T_out).permute(0, 3, 1, 2) #(B, T, N, D)
@@ -113,16 +113,12 @@ class DialatedCNN(nn.Module):
 class FuturePredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.config = config
-        self.l1 = nn.Linear(config.time_steps, config.time_steps*2)
-        self.l2 = nn.Linear(config.time_steps*2, config.time_steps*2)
-        self.l3 = nn.Linear(config.time_steps*2, 2)
+        self.predictor = nn.Linear(config.time_steps, 2)
 
     def forward(self, x):
-        B, T, N, F = x.shape
-        x = x.permute(0, 2, -1, 1) # (B, N, F, T)
-        out = F.relu(self.l3(F.relu(self.l2(F.relu(self.l1(x))))))
-        return out.permute(0, 3, 1, 2)
+        x = x.permute(0, 2, 3, 1)
+        x = self.predictor(x)
+        return x.permute(0, 3, 1, 2)
 
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
@@ -148,7 +144,7 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         B2, T2, N2, D2 = high_out.shape
 
         if B != B2 or T != T2 or N != N2 or D != D2:
-            raise ValueError("There is a missmatch in the low_out shape and high_out shape")
+            raise ValueError("There is a mismatch in the low_out shape and high_out shape")
 
         low_out = self.cross_stock_low(low_out) + self.stock_embedding + self.time_embedding
         high_out = self.cross_stock_high(high_out) + self.stock_embedding + self.time_embedding
