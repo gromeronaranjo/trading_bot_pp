@@ -204,7 +204,7 @@ class StockFormer(nn.Module):
         low, high = self.future_pred_low(low), self.future_pred_high(high)
         out = self.dual_frequency_fusion(low, high)
 
-        return_val = self.return_head(out[:, 0, :, :])
+        return_val = self.return_proj(out[:, 0, :, :])
         direction_val = self.direction_proj(out[:, 1, :, :])
 
         return return_val, direction_val
