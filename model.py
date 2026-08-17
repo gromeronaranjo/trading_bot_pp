@@ -54,10 +54,10 @@ class Head(nn.Module):
         return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, head):
         super().__init__()
         self.config = config
-        self.heads = nn.ModuleList([Head(config) for _ in range(config.n_heads)])
+        self.heads = nn.ModuleList([head(config) for _ in range(config.n_heads)])
         self.projection = nn.Linear(config.dense_size, config.dense_size)
 
     def forward(self, low):
@@ -124,7 +124,7 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
-        self.temporal_attention = MultiHeadAttention(config)
+        self.temporal_attention = MultiHeadAttention(config, Head())
         self.dialated_cnn = DialatedCNN(config)
 
         self.cross_stock_low = CrossStockAttention(config)
@@ -150,6 +150,34 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         high_out = self.cross_stock_high(high_out) + self.stock_embedding + self.time_embedding
 
         return low_out, high_out
+
+class CrossLowHighAttentionHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.query = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.keys = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.values = nn.Linear(config.dense_size, config.dense_size // config.n_heads)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, low, high):
+        B, T, N, D = low.shape
+        low = low.permute(0, 2, 1, 3) # B, N, T, D
+        q, k, v = self.query(low), self.keys(high), self.values(high)
+        pre_softmax = q @ k.transpose(-1, -2) # (T, D) @ (D, T) = (T, T)
+        scores = functional.softmax(pre_softmax, dim=-1)
+        return self.dropout(scores @ v) #(T, T) @ (T, D) = (T, D)
+    
+class DualFrequencyFusionModule(nn.Module):
+    def __init__(self, config):
+        self.config = config
+        self.low_attention = MultiHeadAttention(config, Head())
+        self.cross_attention = MultiHeadAttention(config, CrossLowHighAttentionHead)
+
+    def forward(self, low, high):
+        low_out = self.low_attention(low)
+        cross_out = self.cross_attention(low, high)
+
+        return low_out + cross_out
 
 class StockFormer(nn.Module):
     def __init__(self, config):
