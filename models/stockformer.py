@@ -21,6 +21,7 @@ def wavelet_decompose(x):
 
     return low, high
 
+
 def pearson_stock_graph(x):
     B, T, N, F = x.shape
     x = x[:, :, :, 0] #(B, T, N)
@@ -30,6 +31,45 @@ def pearson_stock_graph(x):
     coefs = torch.corrcoef(x.T)
 
     return coefs
+
+
+class Struc2Vec(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.embedding = nn.Embedding(
+            config.n_stocks,
+            config.dense_size
+        )
+
+    def forward(self, corr):
+        adjacency = (corr.abs() >= 0.5).float()
+        adjacency.fill_diagonal_(0)
+
+        degrees = adjacency.sum(dim=1)
+
+        degree_distance = torch.abs(
+            degrees.unsqueeze(1) - degrees.unsqueeze(0)
+        )
+
+        similarity = torch.exp(-degree_distance)
+        similarity.fill_diagonal_(0)
+
+        probabilities = similarity / similarity.sum(
+            dim=1,
+            keepdim=True
+        ).clamp_min(1e-12)
+
+        sampled_stocks = torch.multinomial(
+            probabilities,
+            num_samples=20,
+            replacement=True
+        )
+
+        stock_embedding = self.embedding(sampled_stocks)
+
+        stock_embedding = stock_embedding.mean(dim=1)
+
+        return stock_embedding
 
 
 class Decoupling(nn.Module):
@@ -148,6 +188,7 @@ class CrossStockAttention(nn.Module):
 
         return output
 
+
 class DialatedCNN(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -182,6 +223,7 @@ class FuturePredictor(nn.Module):
         x = self.predictor(x)
         return x.permute(0, 3, 1, 2)
 
+
 class TemporalEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -204,9 +246,10 @@ class TemporalEmbedding(nn.Module):
         te = self.proj2(te)
 
         return te.unsqueeze(2)
-    
+
+
 class DualFrequencySpatiotemporalEncoder(nn.Module):
-    def __init__(self, config, stock_embedding):
+    def __init__(self, config):
         super().__init__()
         self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config, Head)
@@ -215,19 +258,13 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.cross_stock_low = CrossStockAttention(config)
         self.cross_stock_high = CrossStockAttention(config)
 
-        self.register_buffer(
-            "stock_embedding",
-            stock_embedding.unsqueeze(0).unsqueeze(0) #(1, 1, N, N)
-        )
-
-        self.stock_embedding_processing = nn.Linear(config.n_stocks, config.dense_size)
         self.temporal_embedding = TemporalEmbedding(config)
 
-    def forward(self, low, high, te):
+    def forward(self, low, high, te, stock_embedding):
         low = self.feature_proj(low)
         high = self.feature_proj(high)
 
-        stock_embedding = self.stock_embedding_processing(self.stock_embedding)
+        stock_embedding = stock_embedding.unsqueeze(0).unsqueeze(0)
         time_embedding = self.temporal_embedding(te)
 
         low = low + time_embedding
@@ -243,6 +280,7 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         high_out = self.cross_stock_high(high_out)
 
         return low_out, high_out
+
 
 class CrossLowHighAttentionHead(nn.Module):
     def __init__(self, config):
@@ -285,14 +323,14 @@ class DualFrequencyFusionModule(nn.Module):
 
 
 class StockFormer(nn.Module):
-    def __init__(self, config, stock_embedding):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.decoupling = Decoupling()
+        self.struc2vec = Struc2Vec(config)
 
         self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(
-            config,
-            stock_embedding
+            config
         )
 
         self.future_pred_low = FuturePredictor(config)
@@ -303,8 +341,16 @@ class StockFormer(nn.Module):
         self.direction_proj = nn.Linear(config.dense_size, 1)
 
     def forward(self, x, te):
+        stock_graph = pearson_stock_graph(x)
+        stock_embedding = self.struc2vec(stock_graph)
+
         low, high = self.decoupling(x)
-        low, high = self.duel_freq_spatio_temporal_encoder(low, high, te)
+        low, high = self.duel_freq_spatio_temporal_encoder(
+            low,
+            high,
+            te,
+            stock_embedding
+        )
 
         low = self.future_pred_low(low)
         high = self.future_pred_high(high)
