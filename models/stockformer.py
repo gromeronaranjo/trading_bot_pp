@@ -36,38 +36,67 @@ def pearson_stock_graph(x):
 class Struc2Vec(nn.Module):
     def __init__(self, config):
         super().__init__()
+
         self.embedding = nn.Embedding(
             config.n_stocks,
             config.dense_size
-        )
+        ) # (N, D)
 
-    def forward(self, corr):
-        adjacency = (corr.abs() >= 0.5).float()
-        adjacency.fill_diagonal_(0)
+    def forward(self, corr, threshold=0.5, num_walks=20, walk_length=20):
+        N = corr.shape[0] # corr: (N, N)
 
-        degrees = adjacency.sum(dim=1)
+        adjacency = (corr.abs() >= threshold).float() # (N, N)
+        adjacency.fill_diagonal_(0) # (N, N)
+
+        degrees = adjacency.sum(dim=1) # (N)
 
         degree_distance = torch.abs(
             degrees.unsqueeze(1) - degrees.unsqueeze(0)
-        )
+        ) # (N, 1) - (1, N) -> (N, N)
 
-        similarity = torch.exp(-degree_distance)
-        similarity.fill_diagonal_(0)
+        similarity = torch.exp(-degree_distance) # (N, N)
+        similarity.fill_diagonal_(0) # (N, N)
 
         probabilities = similarity / similarity.sum(
             dim=1,
             keepdim=True
-        ).clamp_min(1e-12)
+        ) # (N, N)
 
-        sampled_stocks = torch.multinomial(
-            probabilities,
-            num_samples=20,
-            replacement=True
-        )
+        current = torch.arange(
+            N,
+            device=corr.device
+        ).unsqueeze(1).expand(N, num_walks) # (N, W)
 
-        stock_embedding = self.embedding(sampled_stocks)
+        walks = [current.unsqueeze(-1)] # each item: (N, W, 1)
 
-        stock_embedding = stock_embedding.mean(dim=1)
+        for _ in range(walk_length - 1):
+            current_probabilities = probabilities[current] # (N, W, N)
+
+            current = torch.multinomial(
+                current_probabilities.reshape(-1, N),
+                num_samples=1
+            ).reshape(N, num_walks) # (N, W)
+
+            walks.append(
+                current.unsqueeze(-1)
+            ) # (N, W, 1)
+
+        walks = torch.cat(
+            walks,
+            dim=-1
+        ) # (N, W, L)
+
+        walk_embeddings = self.embedding(
+            walks
+        ) # (N, W, L, D)
+
+        walk_representations = walk_embeddings.mean(
+            dim=2
+        ) # (N, W, D)
+
+        stock_embedding = walk_representations.mean(
+            dim=1
+        ) # (N, D)
 
         return stock_embedding
 
