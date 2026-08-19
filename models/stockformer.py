@@ -32,73 +32,122 @@ def pearson_stock_graph(x):
 
     return coefs
 
+def dtw_distance(x, y):
+    L1 = x.shape[0]
+    L2 = y.shape[0]
+    if L1 == 0 and L2 == 0:
+        return torch.tensor(
+            0.0,
+            device=x.device
+        )
+    if L1 == 0 or L2 == 0:
+        return torch.tensor(
+            float("inf"),
+            device=x.device
+        )
+    cost = torch.abs(
+        x.unsqueeze(1) - y.unsqueeze(0)
+    ) # (L1, L2)
+    dtw = torch.full(
+        (L1 + 1, L2 + 1),
+        float("inf"),
+        device=x.device
+    ) # (L1 + 1, L2 + 1)
+    dtw[0, 0] = 0
+    for i in range(1, L1 + 1):
+        for j in range(1, L2 + 1):
+            dtw[i, j] = cost[i - 1, j - 1] + torch.min(
+                torch.stack([
+                    dtw[i - 1, j],
+                    dtw[i, j - 1],
+                    dtw[i - 1, j - 1]
+                ])
+            )
+    return dtw[-1, -1]
 
 class Struc2Vec(nn.Module):
     def __init__(self, config):
         super().__init__()
-
         self.embedding = nn.Embedding(
             config.n_stocks,
             config.dense_size
-        ) # (N, D)
-
-    def forward(self, corr, threshold=0.5, num_walks=20, walk_length=20):
-        N = corr.shape[0] # corr: (N, N)
-
+        )
+    def forward(self, corr, threshold=0.5):
+        N, n = corr.shape
+        if N != n:
+            raise ValueError(
+                "Dimensions do not match in the correlation tensor (N, N)"
+            )
         adjacency = (corr.abs() >= threshold).float() # (N, N)
         adjacency.fill_diagonal_(0) # (N, N)
-
         degrees = adjacency.sum(dim=1) # (N)
-
-        degree_distance = torch.abs(
-            degrees.unsqueeze(1) - degrees.unsqueeze(0)
-        ) # (N, 1) - (1, N) -> (N, N)
-
-        similarity = torch.exp(-degree_distance) # (N, N)
-        similarity.fill_diagonal_(0) # (N, N)
-
-        probabilities = similarity / similarity.sum(
-            dim=1,
-            keepdim=True
-        ) # (N, N)
-
-        current = torch.arange(
-            N,
-            device=corr.device
-        ).unsqueeze(1).expand(N, num_walks) # (N, W)
-
-        walks = [current.unsqueeze(-1)] # each item: (N, W, 1)
-
-        for _ in range(walk_length - 1):
-            current_probabilities = probabilities[current] # (N, W, N)
-
-            current = torch.multinomial(
-                current_probabilities.reshape(-1, N),
-                num_samples=1
-            ).reshape(N, num_walks) # (N, W)
-
-            walks.append(
-                current.unsqueeze(-1)
-            ) # (N, W, 1)
-
-        walks = torch.cat(
-            walks,
-            dim=-1
-        ) # (N, W, L)
-
-        walk_embeddings = self.embedding(
-            walks
-        ) # (N, W, L, D)
-
-        walk_representations = walk_embeddings.mean(
-            dim=2
-        ) # (N, W, D)
-
-        stock_embedding = walk_representations.mean(
-            dim=1
-        ) # (N, D)
-
-        return stock_embedding
+        current_hop = []
+        visited = []
+        for i in range(N):
+            neighbors = torch.where(
+                adjacency[i] == 1
+            )[0]
+            current_hop.append(
+                neighbors
+            )
+            visited_i = torch.zeros(
+                N,
+                dtype=torch.bool,
+                device=corr.device
+            ) # (N)
+            visited_i[i] = True
+            visited_i[neighbors] = True
+            visited.append(
+                visited_i
+            )
+        hop_distances = []
+        while True:
+            hop_degree_sequences = []
+            any_nodes = False
+            for i in range(N):
+                nodes = current_hop[i]
+                if nodes.numel() > 0:
+                    any_nodes = True
+                node_degrees = degrees[nodes]
+                hop_degree_sequences.append(
+                    node_degrees
+                )
+            if not any_nodes:
+                break
+            hop_distance = torch.zeros(
+                N,
+                N,
+                device=corr.device
+            ) # (N, N)
+            for i in range(N):
+                for j in range(N):
+                    hop_distance[i, j] = dtw_distance(
+                        hop_degree_sequences[i],
+                        hop_degree_sequences[j]
+                    )
+            hop_distances.append(
+                hop_distance
+            )
+            next_hop = []
+            for i in range(N):
+                nodes = current_hop[i]
+                next_mask = torch.zeros(
+                    N,
+                    dtype=torch.bool,
+                    device=corr.device
+                ) # (N)
+                for node in nodes:
+                    next_mask |= adjacency[node].bool()
+                next_mask &= ~visited[i]
+                next_nodes = torch.where(
+                    next_mask
+                )[0]
+                visited[i][next_nodes] = True
+                next_hop.append(
+                    next_nodes
+                )
+            current_hop = next_hop
+        return hop_distances
 
 
 class Decoupling(nn.Module):
