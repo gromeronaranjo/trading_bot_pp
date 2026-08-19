@@ -89,10 +89,10 @@ class Struc2Vec(nn.Module):
                 "Dimensions do not match in the correlation tensor (N, N)"
             )
 
-        adjacency = (corr.abs() >= threshold).float() # (N, N)
-        adjacency.fill_diagonal_(0) # (N, N)
+        adjacency = (corr.abs() >= threshold).float()
+        adjacency.fill_diagonal_(0)
 
-        degrees = adjacency.sum(dim=1) # (N)
+        degrees = adjacency.sum(dim=1)
 
         current_hop = []
         visited = []
@@ -110,7 +110,7 @@ class Struc2Vec(nn.Module):
                 N,
                 dtype=torch.bool,
                 device=corr.device
-            ) # (N)
+            )
 
             visited_i[i] = True
             visited_i[neighbors] = True
@@ -144,7 +144,7 @@ class Struc2Vec(nn.Module):
                 N,
                 N,
                 device=corr.device
-            ) # (N, N)
+            )
 
             for i in range(N):
                 for j in range(N):
@@ -166,7 +166,7 @@ class Struc2Vec(nn.Module):
                     N,
                     dtype=torch.bool,
                     device=corr.device
-                ) # (N)
+                )
 
                 for node in nodes:
                     next_mask |= adjacency[node].bool()
@@ -191,18 +191,18 @@ class Struc2Vec(nn.Module):
             N,
             N,
             device=corr.device
-        ) # (N, N)
+        )
 
         for hop_distance in hop_distances:
             finite_distance = torch.where(
                 torch.isfinite(hop_distance),
                 hop_distance,
                 torch.zeros_like(hop_distance)
-            ) # (N, N)
+            )
 
             cumulative_distance = (
                 cumulative_distance + finite_distance
-            ) # (N, N)
+            )
 
             structural_distances.append(
                 cumulative_distance.clone()
@@ -213,15 +213,21 @@ class Struc2Vec(nn.Module):
         for structural_distance in structural_distances:
             weights = torch.exp(
                 -structural_distance
-            ) # (N, N)
+            )
 
-            weights.fill_diagonal_(0) # (N, N)
+            weights.fill_diagonal_(0)
 
             layer_weights.append(
                 weights
             )
 
         K = len(layer_weights)
+
+        if K == 0:
+            return self.embedding.weight, torch.tensor(
+                0.0,
+                device=corr.device
+            )
 
         walks = []
 
@@ -232,32 +238,14 @@ class Struc2Vec(nn.Module):
 
                 walk = [current_node]
 
-                for _ in range(walk_length - 1):
+                while len(walk) < walk_length:
                     stay = torch.rand(
                         1,
                         device=corr.device
                     ).item() < q
 
-                    if stay or K == 1:
-                        weights = layer_weights[current_layer][current_node] # (N)
-
-                        if weights.sum() == 0:
-                            next_node = current_node
-                        else:
-                            probabilities = (
-                                weights / weights.sum()
-                            ) # (N)
-
-                            next_node = torch.multinomial(
-                                probabilities,
-                                1
-                            ).item()
-
-                        current_node = next_node
-                        walk.append(current_node)
-
-                    else:
-                        layer = layer_weights[current_layer] # (N, N)
+                    if not stay and K > 1:
+                        layer = layer_weights[current_layer]
 
                         non_zero = layer[layer > 0]
 
@@ -309,44 +297,63 @@ class Struc2Vec(nn.Module):
                             else:
                                 current_layer += 1
 
+                        continue
+
+                    weights = layer_weights[current_layer][current_node]
+
+                    if weights.sum() == 0:
+                        next_node = current_node
+                    else:
+                        probabilities = (
+                            weights / weights.sum()
+                        )
+
+                        next_node = torch.multinomial(
+                            probabilities,
+                            1
+                        ).item()
+
+                    current_node = next_node
+                    walk.append(current_node)
+
                 walks.append(walk)
 
         walks = torch.tensor(
             walks,
             dtype=torch.long,
             device=corr.device
-        ) # (N * num_walks, walk_length)
+        )
 
-        center = walks[:, 1:-1] # (N * num_walks, walk_length - 2)
-        left = walks[:, :-2] # (N * num_walks, walk_length - 2)
-        right = walks[:, 2:] # (N * num_walks, walk_length - 2)
+        center = walks[:, 1:-1]
+        left = walks[:, :-2]
+        right = walks[:, 2:]
 
         center_embedding = self.embedding(
             center
-        ) # (N * num_walks, walk_length - 2, D)
+        )
 
         left_embedding = self.embedding(
             left
-        ) # (N * num_walks, walk_length - 2, D)
+        )
 
         right_embedding = self.embedding(
             right
-        ) # (N * num_walks, walk_length - 2, D)
+        )
 
         left_score = (
             center_embedding * left_embedding
-        ).sum(dim=-1) # (N * num_walks, walk_length - 2)
+        ).sum(dim=-1)
 
         right_score = (
             center_embedding * right_embedding
-        ).sum(dim=-1) # (N * num_walks, walk_length - 2)
+        ).sum(dim=-1)
 
         struc2vec_loss = (
             -functional.logsigmoid(left_score).mean()
             -functional.logsigmoid(right_score).mean()
         )
 
-        stock_embedding = self.embedding.weight # (N, D)
+        stock_embedding = self.embedding.weight
 
         return stock_embedding, struc2vec_loss
 
@@ -454,7 +461,12 @@ class CrossStockAttention(nn.Module):
         self.heads = nn.ModuleList([CrossStockHead(config) for _ in range(config.n_heads)])
         self.projection = nn.Linear(config.dense_size, config.dense_size)
         self.norm = nn.LayerNorm(config.dense_size, elementwise_affine=False)
-        self.mlp = MLP(config)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(config.dense_size, config.dense_size),
+            nn.ReLU(),
+            nn.Linear(config.dense_size, config.dense_size)
+        )
 
     def forward(self, x):
         residual = x
@@ -530,7 +542,6 @@ class TemporalEmbedding(nn.Module):
 class DualFrequencySpatiotemporalEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.feature_proj = nn.Linear(config.n_features, config.dense_size)
         self.temporal_attention = MultiHeadAttention(config, Head)
         self.dialated_cnn = DialatedCNN(config)
 
@@ -540,10 +551,6 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         self.temporal_embedding = TemporalEmbedding(config)
 
     def forward(self, low, high, te, stock_embedding):
-        low = self.feature_proj(low)
-        high = self.feature_proj(high)
-
-        stock_embedding = stock_embedding.unsqueeze(0).unsqueeze(0)
         time_embedding = self.temporal_embedding(te)
 
         low = low + time_embedding
@@ -552,11 +559,16 @@ class DualFrequencySpatiotemporalEncoder(nn.Module):
         low_out = self.temporal_attention(low)
         high_out = self.dialated_cnn(high)
 
-        low_out = low_out + stock_embedding
-        high_out = high_out + stock_embedding
+        low_spatial = self.cross_stock_low(
+            low_out + stock_embedding.unsqueeze(0).unsqueeze(0)
+        )
 
-        low_out = self.cross_stock_low(low_out)
-        high_out = self.cross_stock_high(high_out)
+        high_spatial = self.cross_stock_high(
+            high_out + stock_embedding.unsqueeze(0).unsqueeze(0)
+        )
+
+        low_out = low_out + low_spatial
+        high_out = high_out + high_spatial
 
         return low_out, high_out
 
@@ -608,6 +620,11 @@ class StockFormer(nn.Module):
         self.decoupling = Decoupling()
         self.struc2vec = Struc2Vec(config)
 
+        self.feature_proj = nn.Linear(
+            config.n_features,
+            config.dense_size
+        )
+
         self.duel_freq_spatio_temporal_encoders = nn.ModuleList([
             DualFrequencySpatiotemporalEncoder(config)
             for _ in range(config.n_encoder_blocks)
@@ -617,6 +634,9 @@ class StockFormer(nn.Module):
         self.future_pred_high = FuturePredictor(config)
         self.dual_frequency_fusion = DualFrequencyFusionModule(config)
 
+        self.low_return_proj = nn.Linear(config.dense_size, 1)
+        self.low_direction_proj = nn.Linear(config.dense_size, 1)
+
         self.return_proj = nn.Linear(config.dense_size, 1)
         self.direction_proj = nn.Linear(config.dense_size, 1)
 
@@ -625,6 +645,9 @@ class StockFormer(nn.Module):
         stock_embedding, struc2vec_loss = self.struc2vec(stock_graph)
 
         low, high = self.decoupling(x)
+
+        low = self.feature_proj(low)
+        high = self.feature_proj(high)
 
         for encoder in self.duel_freq_spatio_temporal_encoders:
             low, high = encoder(
@@ -637,9 +660,18 @@ class StockFormer(nn.Module):
         low = self.future_pred_low(low)
         high = self.future_pred_high(high)
 
+        low_return_val = self.low_return_proj(low)
+        low_direction_val = self.low_direction_proj(low)
+
         out = self.dual_frequency_fusion(low, high)
 
         return_val = self.return_proj(out)
         direction_val = self.direction_proj(out)
 
-        return return_val, direction_val, struc2vec_loss
+        return (
+            return_val,
+            direction_val,
+            low_return_val,
+            low_direction_val,
+            struc2vec_loss
+        )
