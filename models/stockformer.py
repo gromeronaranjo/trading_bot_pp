@@ -608,9 +608,10 @@ class StockFormer(nn.Module):
         self.decoupling = Decoupling()
         self.struc2vec = Struc2Vec(config)
 
-        self.duel_freq_spatio_temporal_encoder = DualFrequencySpatiotemporalEncoder(
-            config
-        )
+        self.duel_freq_spatio_temporal_encoders = nn.ModuleList([
+            DualFrequencySpatiotemporalEncoder(config)
+            for _ in range(config.n_encoder_blocks)
+        ])
 
         self.future_pred_low = FuturePredictor(config)
         self.future_pred_high = FuturePredictor(config)
@@ -621,15 +622,17 @@ class StockFormer(nn.Module):
 
     def forward(self, x, te):
         stock_graph = pearson_stock_graph(x)
-        stock_embedding = self.struc2vec(stock_graph)
+        stock_embedding, struc2vec_loss = self.struc2vec(stock_graph)
 
         low, high = self.decoupling(x)
-        low, high = self.duel_freq_spatio_temporal_encoder(
-            low,
-            high,
-            te,
-            stock_embedding
-        )
+
+        for encoder in self.duel_freq_spatio_temporal_encoders:
+            low, high = encoder(
+                low,
+                high,
+                te,
+                stock_embedding
+            )
 
         low = self.future_pred_low(low)
         high = self.future_pred_high(high)
@@ -639,4 +642,4 @@ class StockFormer(nn.Module):
         return_val = self.return_proj(out)
         direction_val = self.direction_proj(out)
 
-        return return_val, direction_val
+        return return_val, direction_val, struc2vec_loss
