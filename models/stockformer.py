@@ -68,86 +68,287 @@ def dtw_distance(x, y):
 class Struc2Vec(nn.Module):
     def __init__(self, config):
         super().__init__()
+
         self.embedding = nn.Embedding(
             config.n_stocks,
             config.dense_size
         )
-    def forward(self, corr, threshold=0.5):
+
+    def forward(
+        self,
+        corr,
+        threshold=0.5,
+        num_walks=20,
+        walk_length=20,
+        q=0.5
+    ):
         N, n = corr.shape
+
         if N != n:
             raise ValueError(
                 "Dimensions do not match in the correlation tensor (N, N)"
             )
+
         adjacency = (corr.abs() >= threshold).float() # (N, N)
         adjacency.fill_diagonal_(0) # (N, N)
+
         degrees = adjacency.sum(dim=1) # (N)
+
         current_hop = []
         visited = []
+
         for i in range(N):
             neighbors = torch.where(
                 adjacency[i] == 1
             )[0]
+
             current_hop.append(
                 neighbors
             )
+
             visited_i = torch.zeros(
                 N,
                 dtype=torch.bool,
                 device=corr.device
             ) # (N)
+
             visited_i[i] = True
             visited_i[neighbors] = True
+
             visited.append(
                 visited_i
             )
+
         hop_distances = []
+
         while True:
             hop_degree_sequences = []
             any_nodes = False
+
             for i in range(N):
                 nodes = current_hop[i]
+
                 if nodes.numel() > 0:
                     any_nodes = True
+
                 node_degrees = degrees[nodes]
+
                 hop_degree_sequences.append(
                     node_degrees
                 )
+
             if not any_nodes:
                 break
+
             hop_distance = torch.zeros(
                 N,
                 N,
                 device=corr.device
             ) # (N, N)
+
             for i in range(N):
                 for j in range(N):
                     hop_distance[i, j] = dtw_distance(
                         hop_degree_sequences[i],
                         hop_degree_sequences[j]
                     )
+
             hop_distances.append(
                 hop_distance
             )
+
             next_hop = []
+
             for i in range(N):
                 nodes = current_hop[i]
+
                 next_mask = torch.zeros(
                     N,
                     dtype=torch.bool,
                     device=corr.device
                 ) # (N)
+
                 for node in nodes:
                     next_mask |= adjacency[node].bool()
+
                 next_mask &= ~visited[i]
+
                 next_nodes = torch.where(
                     next_mask
                 )[0]
+
                 visited[i][next_nodes] = True
+
                 next_hop.append(
                     next_nodes
                 )
+
             current_hop = next_hop
-        return hop_distances
+
+        structural_distances = []
+
+        cumulative_distance = torch.zeros(
+            N,
+            N,
+            device=corr.device
+        ) # (N, N)
+
+        for hop_distance in hop_distances:
+            finite_distance = torch.where(
+                torch.isfinite(hop_distance),
+                hop_distance,
+                torch.zeros_like(hop_distance)
+            ) # (N, N)
+
+            cumulative_distance = (
+                cumulative_distance + finite_distance
+            ) # (N, N)
+
+            structural_distances.append(
+                cumulative_distance.clone()
+            )
+
+        layer_weights = []
+
+        for structural_distance in structural_distances:
+            weights = torch.exp(
+                -structural_distance
+            ) # (N, N)
+
+            weights.fill_diagonal_(0) # (N, N)
+
+            layer_weights.append(
+                weights
+            )
+
+        K = len(layer_weights)
+
+        walks = []
+
+        for start in range(N):
+            for _ in range(num_walks):
+                current_node = start
+                current_layer = 0
+
+                walk = [current_node]
+
+                for _ in range(walk_length - 1):
+                    stay = torch.rand(
+                        1,
+                        device=corr.device
+                    ).item() < q
+
+                    if stay or K == 1:
+                        weights = layer_weights[current_layer][current_node] # (N)
+
+                        if weights.sum() == 0:
+                            next_node = current_node
+                        else:
+                            probabilities = (
+                                weights / weights.sum()
+                            ) # (N)
+
+                            next_node = torch.multinomial(
+                                probabilities,
+                                1
+                            ).item()
+
+                        current_node = next_node
+                        walk.append(current_node)
+
+                    else:
+                        layer = layer_weights[current_layer] # (N, N)
+
+                        non_zero = layer[layer > 0]
+
+                        if non_zero.numel() == 0:
+                            average_weight = torch.tensor(
+                                0.0,
+                                device=corr.device
+                            )
+                        else:
+                            average_weight = non_zero.mean()
+
+                        gamma = (
+                            layer[current_node] > average_weight
+                        ).sum().float()
+
+                        up_weight = torch.log(
+                            gamma + torch.e
+                        )
+
+                        down_weight = torch.tensor(
+                            1.0,
+                            device=corr.device
+                        )
+
+                        if current_layer == 0:
+                            current_layer += 1
+
+                        elif current_layer == K - 1:
+                            current_layer -= 1
+
+                        else:
+                            layer_probabilities = torch.stack([
+                                down_weight,
+                                up_weight
+                            ])
+
+                            layer_probabilities = (
+                                layer_probabilities /
+                                layer_probabilities.sum()
+                            )
+
+                            direction = torch.multinomial(
+                                layer_probabilities,
+                                1
+                            ).item()
+
+                            if direction == 0:
+                                current_layer -= 1
+                            else:
+                                current_layer += 1
+
+                walks.append(walk)
+
+        walks = torch.tensor(
+            walks,
+            dtype=torch.long,
+            device=corr.device
+        ) # (N * num_walks, walk_length)
+
+        center = walks[:, 1:-1] # (N * num_walks, walk_length - 2)
+        left = walks[:, :-2] # (N * num_walks, walk_length - 2)
+        right = walks[:, 2:] # (N * num_walks, walk_length - 2)
+
+        center_embedding = self.embedding(
+            center
+        ) # (N * num_walks, walk_length - 2, D)
+
+        left_embedding = self.embedding(
+            left
+        ) # (N * num_walks, walk_length - 2, D)
+
+        right_embedding = self.embedding(
+            right
+        ) # (N * num_walks, walk_length - 2, D)
+
+        left_score = (
+            center_embedding * left_embedding
+        ).sum(dim=-1) # (N * num_walks, walk_length - 2)
+
+        right_score = (
+            center_embedding * right_embedding
+        ).sum(dim=-1) # (N * num_walks, walk_length - 2)
+
+        struc2vec_loss = (
+            -functional.logsigmoid(left_score).mean()
+            -functional.logsigmoid(right_score).mean()
+        )
+
+        stock_embedding = self.embedding.weight # (N, D)
+
+        return stock_embedding, struc2vec_loss
 
 
 class Decoupling(nn.Module):
