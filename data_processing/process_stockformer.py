@@ -2,6 +2,7 @@ import pandas as pd
 import torch
 
 df = pd.read_parquet("data/stockformer_raw.parquet")
+df["datetime"] = pd.to_datetime(df["datetime"])
 
 tickers = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "JPM", "BAC", "GS", "XOM", "CVX", "JNJ", "LLY", "UNH", "WMT", "COST", "HD", "CAT", "GE", "NEE", "DUK", "KO", "PEP"]
 
@@ -84,6 +85,50 @@ for ticker in tickers:
     indiv_df = indiv_df.sort_values("datetime").reset_index(drop=True)
 
     dfs[ticker] = indiv_df
+
+dates = pd.to_datetime(dfs[tickers[0]]["datetime"])
+
+day_of_week = torch.tensor(
+    dates.dt.dayofweek.to_numpy(),
+    dtype=torch.long
+)
+
+times = dates.dt.strftime("%H:%M:%S")
+unique_times = sorted(times.unique())
+
+time_to_index = {
+    time: i
+    for i, time in enumerate(unique_times)
+}
+
+time_of_day = torch.tensor(
+    [time_to_index[time] for time in times],
+    dtype=torch.long
+)
+
+temporal_data = torch.stack(
+    [day_of_week, time_of_day],
+    dim=-1
+)
+
+TE = []
+
+n_sequences = (
+    len(temporal_data)
+    - sequence_length
+    - prediction_length
+    + 1
+)
+
+for i in range(n_sequences):
+    TE.append(
+        temporal_data[
+            i:
+            i + sequence_length
+        ]
+    )
+
+TE = torch.stack(TE)
 
 X_stocks = {}
 Y_regression_stocks = {}
@@ -179,4 +224,10 @@ Y_classifier = torch.stack(
 torch.save(X, "/Users/gromeronaranjo/Desktop/personal_project/data/X.pt")
 torch.save(Y_regression, "/Users/gromeronaranjo/Desktop/personal_project/data/Y_regression.pt")
 torch.save(Y_classifier, "/Users/gromeronaranjo/Desktop/personal_project/data/Y_classifier.pt")
+torch.save(TE, "/Users/gromeronaranjo/Desktop/personal_project/data/TE.pt")
+
+print("x:", X.shape)
+print("y regression:", Y_regression.shape)
+print("y classifier:", Y_classifier.shape)
+print("te:", TE.shape)
 print("done")
