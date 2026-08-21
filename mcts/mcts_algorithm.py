@@ -57,5 +57,10 @@ def generate_action_space(stock_list, percentages):
     action_space = []
     for percentage in percentages:
         for stock in stock_list:
-            Action
+            action_space.append(Action(percentage, "buy", stock))
+
+    for stock in stock_list:
+        action_space.append(Action(None, "close", stock))
+
+    action_space.append(Action(None, "hold", None))
 
