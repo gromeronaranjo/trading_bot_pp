@@ -26,8 +26,8 @@ class StockFormerConfig:
 
 
 class Action:
-    def __init__(self, percentage_invested, direction, stock):
-        self.percentage_invested = percentage_invested
+    def __init__(self, amount_invested, direction, stock):
+        self.amount_invested = amount_invested
         self.direction = direction
         self.stock = stock
 
@@ -52,12 +52,12 @@ class Node:
         return self.total_reward / self.times_visited
 
 
-def generate_action_space(stock_list, percentages):
+def generate_action_space(stock_list, amounts):
     actions = []
 
     for stock in stock_list:
-        for percentage in percentages:
-            actions.append(Action(percentage, "buy", stock))
+        for amount in amounts:
+            actions.append(Action(amount, "buy", stock))
 
         actions.append(Action(None, "close", stock))
 
@@ -73,11 +73,8 @@ def get_valid_actions(node, actions):
         if action.direction == "hold":
             valid_actions.append(action)
 
-        elif action.direction == "buy":
-            amount = node.money * action.percentage_invested
-
-            if node.cash + 1e-9 >= amount:
-                valid_actions.append(action)
+        elif action.direction == "buy" and node.cash + 1e-9 >= action.amount_invested:
+            valid_actions.append(action)
 
         elif action.direction == "close" and action.stock in node.positions:
             valid_actions.append(action)
@@ -158,12 +155,11 @@ def build_market_states(stockformer, latent_model, x, te, stock_embedding, max_d
 
 
 def apply_action(node, action, market_states, stock_to_idx):
-    money = node.money
     cash = node.cash
     positions = node.positions.copy()
 
     if action.direction == "buy":
-        amount = money * action.percentage_invested
+        amount = action.amount_invested
         positions[action.stock] = positions.get(action.stock, 0.0) + amount
         cash -= amount
 
@@ -180,7 +176,7 @@ def apply_action(node, action, market_states, stock_to_idx):
             stock_return = returns[day, index].item()
             positions[stock] *= 1.0 + stock_return
 
-        money = cash + sum(positions.values())
+    money = cash + sum(positions.values())
 
     return money, cash, positions
 
@@ -246,7 +242,7 @@ def expand(node, actions, market_states, stock_to_idx):
     return child
 
 
-def rollout(node, actions, market_states, stock_to_idx, max_depth):
+def rollout(node, actions, market_states, stock_to_idx, max_depth, starting_money):
     current = node
 
     while current.depth < max_depth:
@@ -254,7 +250,7 @@ def rollout(node, actions, market_states, stock_to_idx, max_depth):
         action = random.choice(valid_actions)
         current = transition(current, action, actions, market_states, stock_to_idx)
 
-    return current.money - 1.0
+    return current.money / starting_money - 1.0
 
 
 def backpropagate(node, reward):
@@ -281,31 +277,27 @@ def best_sequence(root):
     return sequence
 
 
-def print_sequence(sequence):
+def print_sequence(sequence, starting_money):
     day = 0
     to_print = []
 
     for i in sequence:
         day += 2
 
-        if i.money != 0:
-            cash_percentage = i.cash / i.money
-        else:
-            cash_percentage = 0.0
-
         day_info = {
             "day": day,
             "stock": i.action.stock,
             "direction": i.action.direction,
-            "percentage_invested": i.action.percentage_invested,
-            "cash_perc": cash_percentage,
-            "money_perc": i.money,
+            "amount_invested": i.action.amount_invested,
+            "cash": i.cash,
+            "money": i.money,
+            "return_percentage": (i.money / starting_money - 1.0) * 100,
         }
 
         to_print.append(day_info)
 
     if len(sequence) > 0:
-        total_percentage_gained = (sequence[-1].money - 1.0) * 100
+        total_percentage_gained = (sequence[-1].money / starting_money - 1.0) * 100
     else:
         total_percentage_gained = 0.0
 
@@ -342,12 +334,13 @@ stock_list = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "JPM", "BAC", "GS
 
 stock_to_idx = {stock: index for index, stock in enumerate(stock_list)}
 
-percentages = [0.025, 0.05, 0.075]
+starting_money = 2000
+amounts = [25.0, 50.0, 75.0]
 
-actions = generate_action_space(stock_list, percentages)
+actions = generate_action_space(stock_list, amounts)
 
 X = torch.load("/Users/gromeronaranjo/Desktop/personal_project/data/X.pt", map_location="cpu")
-TE = torch.load("/Users/gromeronaranjo/Desktop/personal_project/data/TE.pt", map_location="cpu")
+TE = torch.load("/Users/gromeronaranajo/Desktop/personal_project/data/TE.pt", map_location="cpu")
 
 train_end = int(len(X) * 0.75)
 index = random.randint(0, train_end - 1)
@@ -364,7 +357,7 @@ with torch.inference_mode():
     stock_embedding = stockformer.struc2vec.embedding.weight
     market_states = build_market_states(stockformer, latent_model, x, te, stock_embedding, max_depth)
 
-root = Node(None, None, 0, 1.0, 1.0, {})
+root = Node(None, None, 0, starting_money, starting_money, {})
 root.untried_actions = get_valid_actions(root, actions)
 
 for simulation in tqdm(range(simulations), desc="MCTS simulations"):
@@ -373,9 +366,9 @@ for simulation in tqdm(range(simulations), desc="MCTS simulations"):
     if node.depth < max_depth and len(node.untried_actions) > 0 and len(node.children) < max_children(node):
         node = expand(node, actions, market_states, stock_to_idx)
 
-    reward = rollout(node, actions, market_states, stock_to_idx, max_depth)
+    reward = rollout(node, actions, market_states, stock_to_idx, max_depth, starting_money)
 
     backpropagate(node, reward)
 
 sequence = best_sequence(root)
-print_sequence(sequence)
+print_sequence(sequence, starting_money)
