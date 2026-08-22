@@ -267,48 +267,37 @@ def best_sequence(root):
     return sequence
 
 
-def print_sequence(root, market_states, stock_to_idx):
-    sequence = best_sequence(root)
+def print_sequence(sequence):
+    day = 0
+    to_print = []
 
-    print()
-    print("trading sequence")
-    print()
+    for i in sequence:
+        day += 2
 
-    for node in sequence:
-        action = node.action
-        state = market_states[node.depth - 1]
-        start_day = (node.depth - 1) * 2 + 1
-        end_day = start_day + 1
+        day_info = {
+            "day": day,
+            "stock": i.action.stock,
+            "direction": i.action.direction,
 
-        print(f"days {start_day}-{end_day}")
-        print("action:", action.direction)
-        print("stock:", action.stock)
+            "percentage_invested": i.action.percentage_invested,
+            "cash_perc": i.cash,
+            "money_perc": i.money,
+        }
 
-        if action.percentage_invested is not None:
-            print("percentage invested:", f"{action.percentage_invested * 100:.1f}%")
+        to_print.append(day_info)
 
-        if action.stock is not None:
-            index = stock_to_idx[action.stock]
-            return_1 = state["returns_cpu"][0, index].item()
-            return_2 = state["returns_cpu"][1, index].item()
-            direction_1 = "up" if return_1 >= 0 else "down"
-            direction_2 = "up" if return_2 >= 0 else "down"
+    if len(sequence) > 0:
+        total_percentage_gained = (sequence[-1].money - 1.0) * 100
+    else:
+        total_percentage_gained = 0.0
 
-            print("day 1 predicted return:", f"{return_1 * 100:.4f}%")
-            print("day 1 direction:", direction_1)
-            print("day 2 predicted return:", f"{return_2 * 100:.4f}%")
-            print("day 2 direction:", direction_2)
+    for i in to_print:
+        print(i)
 
-        print("period reward:", f"{node.period_reward:.6f}")
-        print("total reward:", f"{node.money - 1.0:.6f}")
-        print("account value:", f"{node.money:.6f}")
-        print("cash available:", f"{node.cash * 100:.1f}%")
-        print("positions:", {stock: f"{percentage * 100:.1f}%" for stock, percentage in node.positions.items()})
-        print("visits:", node.times_visited)
-        print("MCTS total reward:", node.total_reward)
-        print("average reward:", node.average_reward())
-        print()
+    print("total percentage gained:", total_percentage_gained)
 
+    return to_print, total_percentage_gained
+    
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
