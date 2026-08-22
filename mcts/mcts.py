@@ -73,8 +73,11 @@ def get_valid_actions(node, actions):
         if action.direction == "hold":
             valid_actions.append(action)
 
-        elif action.direction == "buy" and node.cash + 1e-9 >= action.percentage_invested:
-            valid_actions.append(action)
+        elif action.direction == "buy":
+            amount = node.money * action.percentage_invested
+
+            if node.cash + 1e-9 >= amount:
+                valid_actions.append(action)
 
         elif action.direction == "close" and action.stock in node.positions:
             valid_actions.append(action)
@@ -160,9 +163,9 @@ def apply_action(node, action, market_states, stock_to_idx):
     positions = node.positions.copy()
 
     if action.direction == "buy":
-        percentage = action.percentage_invested
-        positions[action.stock] = positions.get(action.stock, 0.0) + percentage
-        cash -= percentage
+        amount = money * action.percentage_invested
+        positions[action.stock] = positions.get(action.stock, 0.0) + amount
+        cash -= amount
 
     elif action.direction == "close":
         if action.stock in positions:
@@ -172,13 +175,12 @@ def apply_action(node, action, market_states, stock_to_idx):
     returns = market_states[node.depth]["returns_cpu"]
 
     for day in range(2):
-        generated_return = 0.0
-
-        for stock, percentage in positions.items():
+        for stock in positions:
             index = stock_to_idx[stock]
-            generated_return += percentage * returns[day, index].item()
+            stock_return = returns[day, index].item()
+            positions[stock] *= 1.0 + stock_return
 
-        money *= 1.0 + generated_return
+        money = cash + sum(positions.values())
 
     return money, cash, positions
 
@@ -206,7 +208,7 @@ def ucb(parent, child, exploration=1.4):
 
 
 def max_children(node):
-    return max(3, int(2 * math.sqrt(node.times_visited + 1)))
+    return max(2, int(0.75 * (node.times_visited + 1) ** 0.35))
 
 
 def select(node, max_depth):
@@ -286,12 +288,17 @@ def print_sequence(sequence):
     for i in sequence:
         day += 2
 
+        if i.money != 0:
+            cash_percentage = i.cash / i.money
+        else:
+            cash_percentage = 0.0
+
         day_info = {
             "day": day,
             "stock": i.action.stock,
             "direction": i.action.direction,
             "percentage_invested": i.action.percentage_invested,
-            "cash_perc": i.cash,
+            "cash_perc": cash_percentage,
             "money_perc": i.money,
         }
 
@@ -310,7 +317,7 @@ def print_sequence(sequence):
         for key, value in i.items():
             print(f"{key}: {value}")
 
-        print()
+        print("\n")
 
     print("total percentage gained:", f"{total_percentage_gained:.4f}%")
 
@@ -351,7 +358,7 @@ te = TE[index:index + 1].to(device)
 print("training sequence:", index)
 
 simulations = 10000
-max_depth = 15
+max_depth = 22
 
 with torch.inference_mode():
     stock_embedding = stockformer.struc2vec.embedding.weight
