@@ -205,8 +205,20 @@ def ucb(parent, child, exploration=1.4):
     return exploitation + exploration_value
 
 
+def max_children(node):
+    return max(3, int(2 * math.sqrt(node.times_visited + 1)))
+
+
 def select(node, max_depth):
-    while node.depth < max_depth and len(node.untried_actions) == 0 and len(node.children) > 0:
+    while node.depth < max_depth:
+        allowed_children = max_children(node)
+
+        if len(node.untried_actions) > 0 and len(node.children) < allowed_children:
+            return node
+
+        if len(node.children) == 0:
+            return node
+
         best_child = node.children[0]
         best_score = ucb(node, best_child)
 
@@ -278,7 +290,6 @@ def print_sequence(sequence):
             "day": day,
             "stock": i.action.stock,
             "direction": i.action.direction,
-
             "percentage_invested": i.action.percentage_invested,
             "cash_perc": i.cash,
             "money_perc": i.money,
@@ -291,13 +302,20 @@ def print_sequence(sequence):
     else:
         total_percentage_gained = 0.0
 
-    for i in to_print:
-        print(i)
+    print()
+    print("trading sequence")
+    print()
 
-    print("total percentage gained:", total_percentage_gained)
+    for i in to_print:
+        for key, value in i.items():
+            print(f"{key}: {value}")
+
+        print()
+
+    print("total percentage gained:", f"{total_percentage_gained:.4f}%")
 
     return to_print, total_percentage_gained
-    
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -321,11 +339,16 @@ percentages = [0.025, 0.05, 0.075]
 
 actions = generate_action_space(stock_list, percentages)
 
-X = torch.load("/Users/gromeronaranjo/Desktop/personal_project/X", map_location="cpu")
-TE = torch.load("/Users/gromeronaranjo/Desktop/personal_project/TE", map_location="cpu")
+X = torch.load("/Users/gromeronaranjo/Desktop/personal_project/data/X.pt", map_location="cpu")
+TE = torch.load("/Users/gromeronaranjo/Desktop/personal_project/data/TE.pt", map_location="cpu")
 
-x = X[-1:].float().to(device)
-te = TE[-1:].to(device)
+train_end = int(len(X) * 0.75)
+index = random.randint(0, train_end - 1)
+
+x = X[index:index + 1].float().to(device)
+te = TE[index:index + 1].to(device)
+
+print("training sequence:", index)
 
 simulations = 10000
 max_depth = 15
@@ -340,11 +363,12 @@ root.untried_actions = get_valid_actions(root, actions)
 for simulation in tqdm(range(simulations), desc="MCTS simulations"):
     node = select(root, max_depth)
 
-    if node.depth < max_depth and len(node.untried_actions) > 0:
+    if node.depth < max_depth and len(node.untried_actions) > 0 and len(node.children) < max_children(node):
         node = expand(node, actions, market_states, stock_to_idx)
 
     reward = rollout(node, actions, market_states, stock_to_idx, max_depth)
 
     backpropagate(node, reward)
 
-print_sequence(root, market_states, stock_to_idx)
+sequence = best_sequence(root)
+print_sequence(sequence)
