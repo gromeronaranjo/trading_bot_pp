@@ -204,7 +204,7 @@ def ucb(parent, child, exploration=1.4):
 
 
 def max_children(node):
-    return max(2, int(0.75 * (node.times_visited + 1) ** 0.35))
+    return max(3, int(0.75 * (node.times_visited + 1) ** 0.35))
 
 
 def select(node, max_depth):
@@ -284,21 +284,26 @@ def print_sequence(sequence, starting_money):
     for i in sequence:
         day += 2
 
+        previous_money = i.parent.money
+        return_percentage = (i.money / previous_money - 1.0) * 100
+
         day_info = {
             "day": day,
             "stock": i.action.stock,
             "direction": i.action.direction,
             "amount_invested": i.action.amount_invested,
             "cash": i.cash,
-            "money": i.money,
-            "return_percentage": (i.money / starting_money - 1.0) * 100,
+            "total_money": i.money,
+            "return_percentage": return_percentage,
         }
 
         to_print.append(day_info)
 
     if len(sequence) > 0:
-        total_percentage_gained = (sequence[-1].money / starting_money - 1.0) * 100
+        total_money = sequence[-1].money
+        total_percentage_gained = (total_money / starting_money - 1.0) * 100
     else:
+        total_money = starting_money
         total_percentage_gained = 0.0
 
     print()
@@ -311,64 +316,50 @@ def print_sequence(sequence, starting_money):
 
         print("\n")
 
+    print("total money:", total_money)
     print("total percentage gained:", f"{total_percentage_gained:.4f}%")
 
-    return to_print, total_percentage_gained
+    return to_print, total_money, total_percentage_gained
 
+def predict(X, TE, starting_money, amounts, simulations, max_depth):
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    X = X.float().to(device)
+    TE = TE.to(device)
 
-stockformer_config = StockFormerConfig()
-latent_config = LatentDynamicsConfig()
+    stockformer_config = StockFormerConfig()
+    latent_config = LatentDynamicsConfig()
 
-stockformer = StockFormer(stockformer_config).to(device)
-latent_model = LatentDynamicsModel(latent_config).to(device)
+    stockformer = StockFormer(stockformer_config).to(device)
+    latent_model = LatentDynamicsModel(latent_config).to(device)
 
-stockformer.load_state_dict(torch.load("/Users/gromeronaranjo/Desktop/personal_project/logs/checkpoints/best.pt", map_location=device))
-latent_model.load_state_dict(torch.load("/Users/gromeronaranjo/Desktop/personal_project/logs/checkpoints/latent_dynamics_best.pt", map_location=device))
+    stockformer.load_state_dict(torch.load("/Users/gromeronaranjo/Desktop/personal_project/logs/checkpoints/best.pt", map_location=device))
+    latent_model.load_state_dict(torch.load("/Users/gromeronaranjo/Desktop/personal_project/logs/checkpoints/latent_dynamics_best.pt", map_location=device))
 
-stockformer.eval()
-latent_model.eval()
+    stockformer.eval()
+    latent_model.eval()
 
-stock_list = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "JPM", "BAC", "GS", "XOM", "CVX", "JNJ", "LLY", "UNH", "WMT", "COST", "HD", "CAT", "GE", "NEE", "DUK", "KO", "PEP"]
+    stock_list = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "JPM", "BAC", "GS", "XOM", "CVX", "JNJ", "LLY", "UNH", "WMT", "COST", "HD", "CAT", "GE", "NEE", "DUK", "KO", "PEP"]
+    stock_to_idx = {stock: index for index, stock in enumerate(stock_list)}
+    actions = generate_action_space(stock_list, amounts)
 
-stock_to_idx = {stock: index for index, stock in enumerate(stock_list)}
+    with torch.inference_mode():
+        stock_embedding = stockformer.struc2vec.embedding.weight
+        market_states = build_market_states(stockformer, latent_model, X, TE, stock_embedding, max_depth)
 
-starting_money = 2000
-amounts = [25.0, 50.0, 75.0]
+    root = Node(None, None, 0, starting_money, starting_money, {})
+    root.untried_actions = get_valid_actions(root, actions)
 
-actions = generate_action_space(stock_list, amounts)
+    for simulation in tqdm(range(simulations), desc="MCTS simulations"):
+        node = select(root, max_depth)
 
-X = torch.load("/Users/gromeronaranjo/Desktop/personal_project/data/X.pt", map_location="cpu")
-TE = torch.load("/Users/gromeronaranajo/Desktop/personal_project/data/TE.pt", map_location="cpu")
+        if node.depth < max_depth and len(node.untried_actions) > 0 and len(node.children) < max_children(node):
+            node = expand(node, actions, market_states, stock_to_idx)
 
-train_end = int(len(X) * 0.75)
-index = random.randint(0, train_end - 1)
+        reward = rollout(node, actions, market_states, stock_to_idx, max_depth, starting_money)
 
-x = X[index:index + 1].float().to(device)
-te = TE[index:index + 1].to(device)
+        backpropagate(node, reward)
 
-print("training sequence:", index)
+    sequence = best_sequence(root)
 
-simulations = 10000
-max_depth = 22
-
-with torch.inference_mode():
-    stock_embedding = stockformer.struc2vec.embedding.weight
-    market_states = build_market_states(stockformer, latent_model, x, te, stock_embedding, max_depth)
-
-root = Node(None, None, 0, starting_money, starting_money, {})
-root.untried_actions = get_valid_actions(root, actions)
-
-for simulation in tqdm(range(simulations), desc="MCTS simulations"):
-    node = select(root, max_depth)
-
-    if node.depth < max_depth and len(node.untried_actions) > 0 and len(node.children) < max_children(node):
-        node = expand(node, actions, market_states, stock_to_idx)
-
-    reward = rollout(node, actions, market_states, stock_to_idx, max_depth, starting_money)
-
-    backpropagate(node, reward)
-
-sequence = best_sequence(root)
-print_sequence(sequence, starting_money)
+    return print_sequence(sequence, starting_money)
